@@ -148,6 +148,7 @@
     <Compile Include="DecisionServiceConfiguration.cs" />
     <Compile Include="DecisionServiceConstants.cs" />
     <Compile Include="DecisionServiceHttpModule.cs" />
+    <Compile Include="DecisionServiceLocal.cs" />
     <Compile Include="DecisionServiceStaticClient.cs" />
     <Compile Include="JoinServerType.cs" />
     <Compile Include="JoinServiceLogger.cs" />
