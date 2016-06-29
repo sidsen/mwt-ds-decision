@@ -169,6 +169,24 @@ namespace Microsoft.Research.MultiWorldTesting.ClientLibrary
             }
         }
 
+        public void ReportRewardAndComplete(string uniqueKey, float reward)
+        {
+            DataPoint dp = (DataPoint)pendingData.Get(uniqueKey);
+            if (dp != null)
+            {
+                // Guaranteed atomic by the language
+                dp.Reward = reward;
+                // Complete the event by evicting it from the cache (this should call the removed
+                // callback)
+                pendingData.Remove(uniqueKey);
+            }
+            else
+            {
+                Trace.TraceWarning("Could not find interaction data corresponding to reward for key {0}", uniqueKey);
+            }
+        }
+
+
         public void ReportOutcome(string uniqueKey, object outcome)
         {
             DataPoint dp = (DataPoint)pendingData.Get(uniqueKey);
@@ -185,7 +203,8 @@ namespace Microsoft.Research.MultiWorldTesting.ClientLibrary
 
         private void EventExpiredCallback(CacheEntryRemovedArguments args)
         {
-            if (args.RemovedReason == CacheEntryRemovedReason.Expired)
+            if (args.RemovedReason == CacheEntryRemovedReason.Expired ||
+                args.RemovedReason == CacheEntryRemovedReason.Removed)
             {
                 DataPoint dp = (DataPoint)args.CacheItem.Value;
                 // If the key exists silently update the data (TODO TRACE/THROW? HERE AND ABOVE)
@@ -223,7 +242,7 @@ namespace Microsoft.Research.MultiWorldTesting.ClientLibrary
     public class DecisionServiceLocal<TContext>
     {
         public DecisionServiceClient<TContext> dsClient;
-        private VowpalWabbit<TContext> vw;
+        private VowpalWabbit vw;
         private InMemoryLogger<TContext, int[]> log;
         public MemoryStream model;
 
@@ -235,6 +254,7 @@ namespace Microsoft.Research.MultiWorldTesting.ClientLibrary
             var config = new DecisionServiceConfiguration("") 
             { 
                 OfflineMode = true, 
+                OfflineApplicationID = "tempmakerand",
                 DevelopmentMode = false
             };
             var metaData = new ApplicationClientMetadata
@@ -246,12 +266,12 @@ namespace Microsoft.Research.MultiWorldTesting.ClientLibrary
             dsClient = DecisionService.Create<TContext>(config, JsonTypeInspector.Default, metaData);
             log = new InMemoryLogger<TContext, int[]>(expUnitMsecs);
             dsClient.Recorder = log;
-            vw = new VowpalWabbit<TContext>(
+            vw = new VowpalWabbit(
                 new VowpalWabbitSettings(vwArgs)
                 {
                     TypeInspector = JsonTypeInspector.Default,
-                    EnableStringExampleGeneration = false,
-                    EnableStringFloatCompact = false
+                    EnableStringExampleGeneration = true,
+                    EnableStringFloatCompact = true
                 }
                 );
             this.modelUpdateInterval = modelUpdateInterval;
@@ -279,7 +299,8 @@ namespace Microsoft.Research.MultiWorldTesting.ClientLibrary
                     uint action = (uint)((int[])dp.InteractData.Value)[0];
                     var label = new ContextualBanditLabel(action, dp.Reward, ((GenericTopSlotExplorerState)dp.InteractData.ExplorerState).Probabilities[action-1]);
                     Console.WriteLine(label);
-                    vw.Learn((TContext)dp.InteractData.Context, label, index: (int)label.Action - 1);
+                    //vw.Learn((TContext)dp.InteractData.Context, label, index: (int)label.Action - 1);
+                    vw.Learn(new[] { "1:-3:0.2 | b:2"});
                     model = new MemoryStream();
                     vw.Native.SaveModel(model);
                     dsClient.UpdateModel(model);
@@ -288,6 +309,27 @@ namespace Microsoft.Research.MultiWorldTesting.ClientLibrary
             }
         }
 
-        
+        public void ReportRewardAndComplete(float reward, string uniqueKey)
+        {
+            //TODO: CHANGE THIS UGLY CAST
+            (dsClient.Recorder as InMemoryLogger<TContext, int[]>).ReportRewardAndComplete(uniqueKey, reward);
+            sinceLastUpdate++;
+            if (sinceLastUpdate == modelUpdateInterval)
+            {
+                foreach (var dp in log.FlushCompleteEvents())
+                {
+                    uint action = (uint)((int[])dp.InteractData.Value)[0];
+                    var label = new ContextualBanditLabel(action, dp.Reward, ((GenericTopSlotExplorerState)dp.InteractData.ExplorerState).Probabilities[action-1]);
+                    Console.WriteLine(label);
+                    //vw.Learn((TContext)dp.InteractData.Context, label, index: (int)label.Action - 1);
+                    vw.Learn(new[] { "1:-3:0.2 | b:2" });
+                }
+                model = new MemoryStream();
+                vw.Native.SaveModel(model);
+                model.Position = 0;
+                dsClient.UpdateModel(model);
+                sinceLastUpdate = 0;
+            }
+        }
     }
 }

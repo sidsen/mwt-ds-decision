@@ -1,5 +1,7 @@
 ﻿using Microsoft.Research.MultiWorldTesting.ClientLibrary;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using VW.Serializer.Attributes;
+using Newtonsoft.Json;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -9,11 +11,47 @@ using System.Threading.Tasks;
 
 namespace ClientDecisionServiceTest
 {
+    public class FoodContext2
+    {
+        [Feature]
+        public string UserLocation { get; set; }
+
+        public int[] Actions { get; set; }
+
+        [JsonProperty(PropertyName = "_multi")]
+        public FoodFeature2[] ActionDependentFeatures
+        {
+            get
+            {
+                return this.Actions
+                    .Select((a, i) => new FoodFeature2(this.Actions.Length, i))
+                    .ToArray();
+            }
+        }
+
+        public static IReadOnlyCollection<FoodFeature2> GetFeaturesFromContext(FoodContext2 context)
+        {
+            return context.ActionDependentFeatures;
+        }
+    }
+
+    public class FoodFeature2
+    {
+        public float[] Scores { get; set; }
+
+        internal FoodFeature2(int numActions, int index)
+        {
+            Scores = Enumerable.Repeat(0f, numActions).ToArray();
+            Scores[index] = index + 1;
+        }
+    }
+
+
     [TestClass]
     public class LocalModeTest
     {
         [TestMethod]
-        public void TestModelUpdate()
+        public void TestDSLocalModelUpdate()
         {
             string vwArgs = "--cb_explore_adf --epsilon 0.2 --cb_type dr -q ::";
             DecisionServiceLocal<FoodContext> dsLocal = new DecisionServiceLocal<FoodContext>(vwArgs, 1, 10);
@@ -23,7 +61,7 @@ namespace ClientDecisionServiceTest
             var id = Guid.NewGuid().ToString();
             var prevModel = dsLocal.model.ToArray();
             dsLocal.ChooseAction(id, context, 1);
-            dsLocal.ReportReward((float)1.0, id);
+            dsLocal.ReportRewardAndComplete((float)1.0, id);
             Assert.IsTrue(!dsLocal.model.ToArray().SequenceEqual(prevModel));
 
             /*
