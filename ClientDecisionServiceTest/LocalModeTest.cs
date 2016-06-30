@@ -8,48 +8,37 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-
 namespace ClientDecisionServiceTest
 {
-    public class FoodContext2
-    {
-        [Feature]
-        public string UserLocation { get; set; }
-
-        public int[] Actions { get; set; }
-
-        [JsonProperty(PropertyName = "_multi")]
-        public FoodFeature2[] ActionDependentFeatures
-        {
-            get
-            {
-                return this.Actions
-                    .Select((a, i) => new FoodFeature2(this.Actions.Length, i))
-                    .ToArray();
-            }
-        }
-
-        public static IReadOnlyCollection<FoodFeature2> GetFeaturesFromContext(FoodContext2 context)
-        {
-            return context.ActionDependentFeatures;
-        }
-    }
-
-    public class FoodFeature2
-    {
-        public float[] Scores { get; set; }
-
-        internal FoodFeature2(int numActions, int index)
-        {
-            Scores = Enumerable.Repeat(0f, numActions).ToArray();
-            Scores[index] = index + 1;
-        }
-    }
-
+    using DataPoint = InMemoryLogger<FoodContext, int>.DataPoint;
 
     [TestClass]
     public class LocalModeTest
     {
+        [TestMethod]
+        public void TestDSLocalInMemoryLogger()
+        {
+            InMemoryLogger<FoodContext, int> logger = new InMemoryLogger<FoodContext, int>(50);
+            var context = new FoodContext { Actions = new int[] { 1, 2, 3 }, UserLocation = "HealthyTown" };
+            string guid1 = Guid.NewGuid().ToString();
+            string guid2 = Guid.NewGuid().ToString();
+
+            // Ensure immediately completed events are visible
+            logger.Record(context, 1, null, null, guid1);
+            logger.Record(context, 2, null, null, guid2);
+            logger.ReportRewardAndComplete(guid1, (float)2.0);
+            logger.ReportRewardAndComplete(guid2, (float)2.0);
+            var dps = logger.FlushCompleteEvents();
+            Assert.IsTrue(dps.Length == 2);
+            string[] guids = { dps[0].Key, dps[1].Key };
+            Assert.IsTrue(guids.Contains(guid1) && guids.Contains(guid2));
+            
+            // Ensure experimental unit duration works
+            
+            // Ensure multithreaded inserts yield correct results
+            
+        }
+
         [TestMethod]
         public void TestDSLocalModelUpdate()
         {
