@@ -18,7 +18,7 @@ namespace ClientDecisionServiceTest
         [TestMethod]
         public void TestDSLocalInMemoryLogger()
         {
-            InMemoryLogger<FoodContext, int> logger = new InMemoryLogger<FoodContext, int>(50);
+            InMemoryLogger<FoodContext, int> logger = new InMemoryLogger<FoodContext, int>(TimeSpan.MaxValue);
             var context = new FoodContext { Actions = new int[] { 1, 2, 3 }, UserLocation = "HealthyTown" };
             string guid1 = Guid.NewGuid().ToString();
             string guid2 = Guid.NewGuid().ToString();
@@ -43,7 +43,7 @@ namespace ClientDecisionServiceTest
         public void TestDSLocalModelUpdate()
         {
             string vwArgs = "--cb_explore_adf --epsilon 0.2 --cb_type dr -q ::";
-            DecisionServiceLocal<FoodContext> dsLocal = new DecisionServiceLocal<FoodContext>(vwArgs, 1, 10);
+            DecisionServiceLocal<FoodContext> dsLocal = new DecisionServiceLocal<FoodContext>(vwArgs, 1, TimeSpan.MaxValue);
             
             // Generate random interactions and ensure the model changes at the right frequency.
             var context = new FoodContext { Actions = new int[] { 1, 2, 3 }, UserLocation = "HealthyTown" };

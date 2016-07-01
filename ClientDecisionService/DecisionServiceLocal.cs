@@ -20,8 +20,8 @@ namespace Microsoft.Research.MultiWorldTesting.ClientLibrary
     /// Joins interactions with rewards locally, using an in-memory cache. The public API of this
     /// logger is thread-safe.
     /// </summary>
-    /// <typeparam name="TContext"></typeparam>
-    /// <typeparam name="TAction"></typeparam>
+    /// <typeparam name="TContext">The Context type</typeparam>
+    /// <typeparam name="TAction">The Action type</typeparam>
     internal class InMemoryLogger<TContext, TAction> : IRecorder<TContext, TAction>, ILogger
     {
         /// <summary>
@@ -38,13 +38,25 @@ namespace Microsoft.Research.MultiWorldTesting.ClientLibrary
             public ConcurrentBag<object> Outcomes = new ConcurrentBag<object>();
         }
 
+        // Handles pending (incomplete) events with a fixed experimental unit duration
         private MemoryCache pendingData;
+        // Stores events that have expired or were completed manually
         private ConcurrentDictionary<string, DataPoint> completeData = new ConcurrentDictionary<string, DataPoint>();
-        private long experimentalUnitMsecs;
+        // The experimental unit duration, or how long to wait for reward information
+        private TimeSpan expUnit;
+        private float defaultReward;
 
-        public InMemoryLogger(long expUnitMsecs)
+        /// <summary>
+        /// Creates a new in-memory logger for exploration data
+        /// </summary>
+        /// <param name="expUnit">The experimental unit duration, or how long to wait for reward 
+        /// information. Set this to TimeSpan.MaxValue for infinite duration (events never expire
+        /// and must be completed manually.</param>
+        /// <param name="defaultReward">Reward value to use when no reward signal is received</param>
+        public InMemoryLogger(TimeSpan expUnit, float defaultReward = (float)0.0)
         {
-            experimentalUnitMsecs = expUnitMsecs;
+            this.expUnit = expUnit;
+            this.defaultReward = defaultReward;
             pendingData = new MemoryCache(Guid.NewGuid().ToString());
         }
 
@@ -60,11 +72,15 @@ namespace Microsoft.Research.MultiWorldTesting.ClientLibrary
                     Value = value,
                     ExplorerState = explorerState,
                     MapperState = mapperState
-                }
+                },
+                Reward = defaultReward
             };
             CacheItemPolicy policy = new CacheItemPolicy();
-            policy.AbsoluteExpiration = new DateTimeOffset(DateTime.Now.AddMilliseconds(experimentalUnitMsecs));
-            policy.RemovedCallback = EventExpiredCallback;
+            if (expUnit != TimeSpan.MaxValue)
+            {
+                policy.AbsoluteExpiration = new DateTimeOffset(DateTime.Now.Add(expUnit));
+            }
+            policy.RemovedCallback = EventRemovedCallback;
             // If the key exists silently update the data
             pendingData.Set(uniqueKey, dp, policy);
         }
@@ -115,13 +131,13 @@ namespace Microsoft.Research.MultiWorldTesting.ClientLibrary
             }
         }
 
-        private void EventExpiredCallback(CacheEntryRemovedArguments args)
+        private void EventRemovedCallback(CacheEntryRemovedArguments args)
         {
             if (args.RemovedReason == CacheEntryRemovedReason.Expired ||
                 args.RemovedReason == CacheEntryRemovedReason.Removed)
             {
                 DataPoint dp = (DataPoint)args.CacheItem.Value;
-                // If the key exists silently update the data (TODO TRACE/THROW? HERE AND ABOVE)
+                // Note: this silently updates the data if the key exists
                 completeData.AddOrUpdate(args.CacheItem.Key, dp, (k, oldDp) => dp);
             }
             else if (args.RemovedReason == CacheEntryRemovedReason.Evicted)
@@ -141,15 +157,15 @@ namespace Microsoft.Research.MultiWorldTesting.ClientLibrary
             // one, returning only the successfully removed ones. This ensures each data point is
             // returned at most once.
             var datapoints = completeData.ToArray();
-            List<DataPoint> retrieved = new List<DataPoint>();
+            List<DataPoint> removed = new List<DataPoint>();
             foreach (var dp in datapoints)
             {
                 if (completeData.TryRemove(dp.Key, out temp))
                 {
-                    retrieved.Add(temp);
+                    removed.Add(temp);
                 }
             }
-            return retrieved.ToArray();
+            return removed.ToArray();
         }
     }
 
@@ -163,12 +179,12 @@ namespace Microsoft.Research.MultiWorldTesting.ClientLibrary
         private int modelUpdateInterval;
         private int sinceLastUpdate = 0;
 
-        public DecisionServiceLocal(string vwArgs, int modelUpdateInterval, int expUnitMsecs)
+        public DecisionServiceLocal(string vwArgs, int modelUpdateInterval, TimeSpan expUnit)
         {
             var config = new DecisionServiceConfiguration("") 
             { 
                 OfflineMode = true, 
-                OfflineApplicationID = "tempmakerand",
+                OfflineApplicationID = Guid.NewGuid().ToString(),
                 DevelopmentMode = false
             };
             var metaData = new ApplicationClientMetadata
@@ -178,7 +194,7 @@ namespace Microsoft.Research.MultiWorldTesting.ClientLibrary
             };
 
             dsClient = DecisionService.Create<TContext>(config, JsonTypeInspector.Default, metaData);
-            log = new InMemoryLogger<TContext, int[]>(expUnitMsecs);
+            log = new InMemoryLogger<TContext, int[]>(expUnit);
             dsClient.Recorder = log;
             vw = new VowpalWabbit<TContext>(
                 new VowpalWabbitSettings(vwArgs)
