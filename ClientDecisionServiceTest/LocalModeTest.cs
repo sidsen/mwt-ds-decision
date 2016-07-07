@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using System.Threading;
 
 namespace ClientDecisionServiceTest
 {
@@ -34,9 +35,42 @@ namespace ClientDecisionServiceTest
             Assert.IsTrue(guids.Contains(guid1) && guids.Contains(guid2));
             
             // Ensure experimental unit duration works
-            
+            logger.experimentalUnit = TimeSpan.FromMilliseconds(10);
+            // Okay to reuse guid since it was flushed above
+            logger.Record(context, 1, null, null, guid1);
+            logger.ReportRewardAndComplete(guid1, (float)1.0);
+            Thread.Sleep(100);
+            dps = logger.FlushCompleteEvents();
+            Console.WriteLine("num dps is " + dps.Length);
+            Assert.IsTrue((dps.Length == 1) && (dps[0].Key == guid1));
+
             // Ensure multithreaded inserts yield correct results
-            
+            logger.experimentalUnit = TimeSpan.MaxValue;
+            const int NumThreads = 16;
+            const int NumEventsPerThread = 50;
+            List<Thread> threads = new List<Thread>(NumThreads);
+            for (int i = 0; i < NumThreads; i++)
+            {
+                threads.Add(new Thread(() =>
+                    {
+                        for (int j = 0; j < NumEventsPerThread; j++)
+                        {
+                            string guid = Guid.NewGuid().ToString();
+                            logger.Record(context, 1, null, null, guid);
+                            logger.ReportRewardAndComplete(guid, (float)3.0);
+                        }
+                    }));
+            }
+            foreach (Thread t in threads)
+            {
+                t.Start();
+            }
+            foreach (Thread t in threads)
+            {
+                t.Join();
+            }
+            dps = logger.FlushCompleteEvents();
+            Assert.IsTrue(dps.Length == NumThreads * NumEventsPerThread);
         }
 
         [TestMethod]

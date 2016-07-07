@@ -38,12 +38,16 @@ namespace Microsoft.Research.MultiWorldTesting.ClientLibrary
             public ConcurrentBag<object> Outcomes = new ConcurrentBag<object>();
         }
 
+        /// <summary>
+        /// The experimental unit duration, or how long to wait for reward information (set to
+        /// TimeSpan.MaxValue for infinite duration
+        /// </summary>
+        public TimeSpan experimentalUnit;
+
         // Handles pending (incomplete) events with a fixed experimental unit duration
         private MemoryCache pendingData;
         // Stores events that have expired or were completed manually
         private ConcurrentDictionary<string, DataPoint> completeData = new ConcurrentDictionary<string, DataPoint>();
-        // The experimental unit duration, or how long to wait for reward information
-        private TimeSpan expUnit;
         private float defaultReward;
 
         /// <summary>
@@ -55,7 +59,7 @@ namespace Microsoft.Research.MultiWorldTesting.ClientLibrary
         /// <param name="defaultReward">Reward value to use when no reward signal is received</param>
         public InMemoryLogger(TimeSpan expUnit, float defaultReward = (float)0.0)
         {
-            this.expUnit = expUnit;
+            this.experimentalUnit = expUnit;
             this.defaultReward = defaultReward;
             pendingData = new MemoryCache(Guid.NewGuid().ToString());
         }
@@ -76,9 +80,9 @@ namespace Microsoft.Research.MultiWorldTesting.ClientLibrary
                 Reward = defaultReward
             };
             CacheItemPolicy policy = new CacheItemPolicy();
-            if (expUnit != TimeSpan.MaxValue)
+            if (experimentalUnit != TimeSpan.MaxValue)
             {
-                policy.AbsoluteExpiration = new DateTimeOffset(DateTime.Now.Add(expUnit));
+                policy.AbsoluteExpiration = new DateTimeOffset(DateTime.Now.Add(experimentalUnit));
             }
             policy.RemovedCallback = EventRemovedCallback;
             // If the key exists silently update the data
@@ -115,7 +119,6 @@ namespace Microsoft.Research.MultiWorldTesting.ClientLibrary
                 Trace.TraceWarning("Could not find interaction data corresponding to reward for key {0}", uniqueKey);
             }
         }
-
 
         public void ReportOutcome(string uniqueKey, object outcome)
         {
