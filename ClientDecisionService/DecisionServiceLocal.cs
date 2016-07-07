@@ -59,6 +59,7 @@ namespace Microsoft.Research.MultiWorldTesting.ClientLibrary
         /// <param name="defaultReward">Reward value to use when no reward signal is received</param>
         public InMemoryLogger(TimeSpan expUnit, float defaultReward = (float)0.0)
         {
+            //TODO: EXPIRATION IS AT GRANULARITY OF 20 SECONDS FOR EFFICIENCY?
             this.experimentalUnit = expUnit;
             this.defaultReward = defaultReward;
             pendingData = new MemoryCache(Guid.NewGuid().ToString());
