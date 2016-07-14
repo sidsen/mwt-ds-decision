@@ -12,10 +12,208 @@ using System.Runtime.Caching;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using System.Timers;
 using System.Diagnostics;
 
 namespace Microsoft.Research.MultiWorldTesting.ClientLibrary
 {
+    /// <summary>
+    /// Joins interactions with rewards locally, using an in-memory cache. The public API of this
+    /// logger is thread-safe.
+    /// </summary>
+    /// <typeparam name="TContext">The Context type</typeparam>
+    /// <typeparam name="TAction">The Action type</typeparam>
+    internal class InMemoryLogger2<TContext, TAction> : IRecorder<TContext, TAction>, ILogger
+    {
+        /// <summary>
+        /// An exploration datapoint, containing the context, action, probability, and reward
+        /// of a given event. In other words, the <x,a,r,p> tuple.
+        /// </summary>
+        internal class DataPoint : IEvent
+        {
+            public string Key { get; set; }
+            // Contains the context, action, and probability (at least)
+            public Interaction InteractData { get; set; }
+            public float Reward { get; set; }
+            // TODO: This can be used to support custom reward functions
+            public ConcurrentBag<object> Outcomes = new ConcurrentBag<object>();
+            // Used to control expiration for fixed-duration events
+            public DateTime ExpiresAt = DateTime.MaxValue;
+        }
+
+        // The experimental unit duration, or how long to wait for reward information before 
+        // completing an event (TimeSpan.MaxValue means wait forever)
+        private TimeSpan experimentalUnit;
+        // Stores pending (incomplete) events, either for a fixed experimental unit duration or for 
+        // manual completion
+        private ConcurrentDictionary<string, DataPoint> pendingData;
+        // A queue and timer to expire events based on the experimental unit duration
+        private ConcurrentQueue<DataPoint> completionQueue;
+        private Timer completionTimer;
+        // Stores expired or manually-completed events 
+        private ConcurrentDictionary<string, DataPoint> completeData = new ConcurrentDictionary<string, DataPoint>();
+        // If no reward information is received, this value will be used
+        private float defaultReward;
+
+        /// <summary>
+        /// Creates a new in-memory logger for exploration data
+        /// </summary>
+        /// <param name="expUnit">The experimental unit duration, or how long to wait for reward 
+        /// information. Set this to TimeSpan.MaxValue for infinite duration (events never expire
+        /// and must be completed manually.</param>
+        /// <param name="defaultReward">Reward value to use when no reward signal is received</param>
+        public InMemoryLogger2(TimeSpan expUnit, float defaultReward = (float)0.0)
+        {
+            this.experimentalUnit = expUnit;
+            this.defaultReward = defaultReward;
+            pendingData = new ConcurrentDictionary<string,DataPoint>();
+            if (experimentalUnit != TimeSpan.MaxValue)
+            {
+                completionQueue = new ConcurrentQueue<DataPoint>();
+                completionTimer = new Timer(experimentalUnit.TotalMilliseconds);
+                completionTimer.Elapsed += completeExpiredEvents;
+                completionTimer.AutoReset = false;
+                completionTimer.Start();
+            }
+        }
+
+        private void completeExpiredEvents(object sender, ElapsedEventArgs e)
+        {
+            DataPoint dp;
+            // At most one call to this handler can be in progress (and no one else dequeues
+            // events), so we can safely dequeue
+            while (completionQueue.TryPeek(out dp) && dp.ExpiresAt <= DateTime.Now)
+            {
+                if (completionQueue.TryDequeue(out dp))
+                {
+                    DataPoint dpActual;
+                    if (!pendingData.TryGetValue(dp.Key, out dpActual))
+                    {
+                        throw new KeyNotFoundException(String.Format("Key {0} was not found", dp.Key));
+                    }                    
+                    if (dp.Equals(dpActual))
+                    {
+                        if (pendingData.TryRemove(dp.Key, out dpActual))
+                        {
+                            completeData.AddOrUpdate(dp.Key, dpActual, (k, oldDp) => dpActual);
+                        }
+                    }
+                }
+            }
+            // Reschedule the timer
+            completionTimer.Interval = (dp != null) ? (dp.ExpiresAt - DateTime.Now).TotalMilliseconds : experimentalUnit.TotalMilliseconds;
+            completionTimer.Start();
+        }
+
+        public void Record(TContext context, TAction value, object explorerState, object mapperState, string uniqueKey)
+        {
+            DataPoint dp = new DataPoint
+            {
+                Key = uniqueKey,
+                InteractData = new Interaction
+                {
+                    Key = uniqueKey,
+                    Context = context,
+                    Value = value,
+                    ExplorerState = explorerState,
+                    MapperState = mapperState
+                },
+                Reward = defaultReward
+            };
+            // Add the datapoint to the dictionary of pending events 
+            pendingData.AddOrUpdate(dp.Key, dp, (k, oldDp) => dp);
+            if (experimentalUnit != TimeSpan.MaxValue)
+            {
+                dp.ExpiresAt = DateTime.Now.Add(experimentalUnit);
+                completionQueue.Enqueue(dp);
+                if (completionQueue.Count == 0)
+                {
+                    completionTimer.Interval = experimentalUnit.TotalMilliseconds;
+                }
+            }
+        }
+
+        public void ReportReward(string uniqueKey, float reward)
+        {
+            //bool foundEvent = false;
+            DataPoint dp = pendingData[uniqueKey];
+            if (dp != null)
+            {
+                // Guaranteed atomic by the language
+                dp.Reward = reward;
+                //foundEvent = true;
+            }
+            //return foundEvent;
+            // throw not found exception
+        }
+
+        public void ReportRewardAndComplete(string uniqueKey, float reward)
+        {
+            //bool foundEvent = false;
+            DataPoint dp;
+            // Attempt to remove and complete the event
+            if (pendingData.TryRemove(uniqueKey, out dp))
+            {
+                // Guaranteed atomic by the language
+                dp.Reward = reward;
+                completeData.AddOrUpdate(dp.Key, dp, (k, oldDp) => dp);
+                //foundEvent = true;
+            }
+            //return foundEvent;
+        }
+
+        public void ReportOutcome(string uniqueKey, object outcome)
+        {
+            //foundEvent = false;
+            DataPoint dp;
+            pendingData.TryGetValue(uniqueKey, out dp);
+            if (dp != null)
+            {
+                // Added to a concurrent bag, so thread safe
+                dp.Outcomes.Add(outcome);
+                //foundEvent = true;
+            }
+            //return foundEvent;
+        }
+
+        private void EventRemovedCallback(CacheEntryRemovedArguments args)
+        {
+            if (args.RemovedReason == CacheEntryRemovedReason.Expired ||
+                args.RemovedReason == CacheEntryRemovedReason.Removed)
+            {
+                DataPoint dp = (DataPoint)args.CacheItem.Value;
+                // Note: this silently updates the data if the key exists
+                completeData.AddOrUpdate(args.CacheItem.Key, dp, (k, oldDp) => dp);
+            }
+            else if (args.RemovedReason == CacheEntryRemovedReason.Evicted)
+            {
+                Trace.TraceError("Interaction data evicted from cache due to lack of memory (may result in biased exploration dataset)!");
+            }
+            else
+            {
+                throw new Exception("Interaction data evicted from cache due to unknown reason");
+            }
+        }
+
+        public DataPoint[] FlushCompleteEvents()
+        {
+            DataPoint temp;
+            // Get a snapshot of the complete events, then iterate through and try to remove each
+            // one, returning only the successfully removed ones. This ensures each data point is
+            // returned at most once.
+            var datapoints = completeData.ToArray();
+            List<DataPoint> removed = new List<DataPoint>();
+            foreach (var dp in datapoints)
+            {
+                if (completeData.TryRemove(dp.Key, out temp))
+                {
+                    removed.Add(temp);
+                }
+            }
+            return removed.ToArray();
+        }
+    }
+
     /// <summary>
     /// Joins interactions with rewards locally, using an in-memory cache. The public API of this
     /// logger is thread-safe.
@@ -177,7 +375,7 @@ namespace Microsoft.Research.MultiWorldTesting.ClientLibrary
     {
         public DecisionServiceClient<TContext> dsClient;
         private VowpalWabbit<TContext> vw;
-        private InMemoryLogger<TContext, int[]> log;
+        private InMemoryLogger2<TContext, int[]> log;
         public MemoryStream model;
 
         private int modelUpdateInterval;
@@ -198,7 +396,7 @@ namespace Microsoft.Research.MultiWorldTesting.ClientLibrary
             };
 
             dsClient = DecisionService.Create<TContext>(config, JsonTypeInspector.Default, metaData);
-            log = new InMemoryLogger<TContext, int[]>(expUnit);
+            log = new InMemoryLogger2<TContext, int[]>(expUnit);
             dsClient.Recorder = log;
             vw = new VowpalWabbit<TContext>(
                 new VowpalWabbitSettings(vwArgs)
