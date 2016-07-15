@@ -222,6 +222,96 @@ namespace Microsoft.Research.MultiWorldTesting.ClientLibrary
         }
     }
 
+    public class DecisionServiceLocal2<TContext> : DecisionServiceClient<TContext>
+    {
+        //public DecisionServiceClient<TContext> dsClient;
+        private VowpalWabbit<TContext> vw;
+        private InMemoryLogger<TContext, int[]> log;
+        public MemoryStream model;
+
+        private int modelUpdateInterval;
+        private int sinceLastUpdate = 0;
+
+        public DecisionServiceLocal2(string vwArgs, int modelUpdateInterval, TimeSpan expUnit)
+            : base(
+            new DecisionServiceConfiguration("")
+            {
+                OfflineMode = true,
+                OfflineApplicationID = Guid.NewGuid().ToString(),
+                DevelopmentMode = false
+            },
+            new ApplicationClientMetadata
+            {
+                TrainArguments = vwArgs,
+                InitialExplorationEpsilon = 1f
+            },
+            new VWExplorer<TContext>(null, JsonTypeInspector.Default, false))
+        {
+            //dsClient = DecisionService.Create<TContext>(config, JsonTypeInspector.Default, metaData);
+            this.Recorder = new InMemoryLogger<TContext, int[]>(expUnit);
+            this.vw = new VowpalWabbit<TContext>(
+                new VowpalWabbitSettings(vwArgs)
+                {
+                    TypeInspector = JsonTypeInspector.Default,
+                    EnableStringExampleGeneration = true,
+                    EnableStringFloatCompact = true
+                }
+                );
+            this.modelUpdateInterval = modelUpdateInterval;
+            model = new MemoryStream();
+        }
+
+        /// <summary>
+        /// Report a simple float reward for the experimental unit identified by the given unique key.
+        /// </summary>
+        /// <param name="reward">The simple float reward.</param>
+        /// <param name="uniqueKey">The unique key of the experimental unit.</param>
+        public void ReportReward(float reward, string uniqueKey)
+        {
+            base.ReportReward(reward, uniqueKey);
+            //throw new Exception("Don't call this, Josh");
+            sinceLastUpdate++;
+            if (sinceLastUpdate == modelUpdateInterval)
+            {
+                foreach (var dp in log.FlushCompleteEvents())
+                {
+                    uint action = (uint)((int[])dp.InteractData.Value)[0];
+                    var label = new ContextualBanditLabel(action, dp.Reward, ((GenericTopSlotExplorerState)dp.InteractData.ExplorerState).Probabilities[action - 1]);
+                    Console.WriteLine(label);
+                    vw.Learn((TContext)dp.InteractData.Context, label, index: (int)label.Action - 1);
+                    //vw.Learn(new[] { "1:-3:0.2 | b:2"});
+                    model = new MemoryStream();
+                    vw.Native.SaveModel(model);
+                    this.UpdateModel(model);
+                }
+                sinceLastUpdate = 0;
+            }
+        }
+
+        public void ReportRewardAndComplete(float reward, string uniqueKey)
+        {
+            //TODO: CHANGE THIS UGLY CAST
+            (this.Recorder as InMemoryLogger<TContext, int[]>).ReportRewardAndComplete(uniqueKey, reward);
+            sinceLastUpdate++;
+            if (sinceLastUpdate == modelUpdateInterval)
+            {
+                foreach (var dp in log.FlushCompleteEvents())
+                {
+                    uint action = (uint)((int[])dp.InteractData.Value)[0];
+                    var label = new ContextualBanditLabel(action, dp.Reward, ((GenericTopSlotExplorerState)dp.InteractData.ExplorerState).Probabilities[action - 1]);
+                    vw.Learn((TContext)dp.InteractData.Context, label, index: (int)label.Action - 1);
+                }
+                model = new MemoryStream();
+                vw.Native.SaveModel(model);
+                model.Position = 0;
+                this.UpdateModel(model);
+                sinceLastUpdate = 0;
+            }
+        }
+    }
+
+
+
     public class DecisionServiceLocal<TContext>
     {
         public DecisionServiceClient<TContext> dsClient;
