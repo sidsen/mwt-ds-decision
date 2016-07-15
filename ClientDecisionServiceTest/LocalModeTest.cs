@@ -20,9 +20,9 @@ namespace ClientDecisionServiceTest
         public void TestDSLocalInMemoryLogger()
         {
             // Logger for manually completed events
-            var logger1 = new InMemoryLogger2<FoodContext, int>(TimeSpan.MaxValue);
+            var logger1 = new InMemoryLogger<FoodContext, int>(TimeSpan.MaxValue);
             // Logger that completes events automatically after 10ms (experimental unit duration)
-            var logger2 = new InMemoryLogger2<FoodContext, int>(new TimeSpan(0,0,0,0,10));
+            var logger2 = new InMemoryLogger<FoodContext, int>(new TimeSpan(0,0,0,0,10));
             var context = new FoodContext { Actions = new int[] { 1, 2, 3 }, UserLocation = "HealthyTown" };
             string guid1 = Guid.NewGuid().ToString();
             string guid2 = Guid.NewGuid().ToString();
