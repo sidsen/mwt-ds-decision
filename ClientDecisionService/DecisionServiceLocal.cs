@@ -224,13 +224,24 @@ namespace Microsoft.Research.MultiWorldTesting.ClientLibrary
 
     public class DecisionServiceLocal2<TContext> : DecisionServiceClient<TContext>
     {
-        //public DecisionServiceClient<TContext> dsClient;
         private VowpalWabbit<TContext> vw;
+        // This serves as the base class's recorder/logger as well, but we keep a reference around
+        // becauses it exposes additional APIs that aren't part of those interfaces (yet)
         private InMemoryLogger<TContext, int[]> log;
-        public MemoryStream model;
 
-        private int modelUpdateInterval;
+        public int ModelUpdateInterval;
         private int sinceLastUpdate = 0;
+
+        // A snapshot of the current VW model
+        public byte[] Model
+        {
+            get
+            {
+                MemoryStream currModel = new MemoryStream();
+                vw.Native.SaveModel(currModel);
+                return currModel.ToArray();
+            }
+        }
 
         public DecisionServiceLocal2(string vwArgs, int modelUpdateInterval, TimeSpan expUnit)
             : base(
@@ -247,8 +258,8 @@ namespace Microsoft.Research.MultiWorldTesting.ClientLibrary
             },
             new VWExplorer<TContext>(null, JsonTypeInspector.Default, false))
         {
-            //dsClient = DecisionService.Create<TContext>(config, JsonTypeInspector.Default, metaData);
-            this.Recorder = new InMemoryLogger<TContext, int[]>(expUnit);
+            this.log = new InMemoryLogger<TContext, int[]>(expUnit);
+            this.Recorder = log;
             this.vw = new VowpalWabbit<TContext>(
                 new VowpalWabbitSettings(vwArgs)
                 {
@@ -257,8 +268,7 @@ namespace Microsoft.Research.MultiWorldTesting.ClientLibrary
                     EnableStringFloatCompact = true
                 }
                 );
-            this.modelUpdateInterval = modelUpdateInterval;
-            model = new MemoryStream();
+            this.ModelUpdateInterval = modelUpdateInterval;
         }
 
         /// <summary>
@@ -266,51 +276,38 @@ namespace Microsoft.Research.MultiWorldTesting.ClientLibrary
         /// </summary>
         /// <param name="reward">The simple float reward.</param>
         /// <param name="uniqueKey">The unique key of the experimental unit.</param>
-        public void ReportReward(float reward, string uniqueKey)
+        new public void ReportReward(float reward, string uniqueKey)
         {
             base.ReportReward(reward, uniqueKey);
-            //throw new Exception("Don't call this, Josh");
             sinceLastUpdate++;
-            if (sinceLastUpdate == modelUpdateInterval)
-            {
-                foreach (var dp in log.FlushCompleteEvents())
-                {
-                    uint action = (uint)((int[])dp.InteractData.Value)[0];
-                    var label = new ContextualBanditLabel(action, dp.Reward, ((GenericTopSlotExplorerState)dp.InteractData.ExplorerState).Probabilities[action - 1]);
-                    Console.WriteLine(label);
-                    vw.Learn((TContext)dp.InteractData.Context, label, index: (int)label.Action - 1);
-                    //vw.Learn(new[] { "1:-3:0.2 | b:2"});
-                    model = new MemoryStream();
-                    vw.Native.SaveModel(model);
-                    this.UpdateModel(model);
-                }
-                sinceLastUpdate = 0;
-            }
+            updateModelMaybe();
         }
 
         public void ReportRewardAndComplete(float reward, string uniqueKey)
         {
-            //TODO: CHANGE THIS UGLY CAST
-            (this.Recorder as InMemoryLogger<TContext, int[]>).ReportRewardAndComplete(uniqueKey, reward);
+            log.ReportRewardAndComplete(uniqueKey, reward);
             sinceLastUpdate++;
-            if (sinceLastUpdate == modelUpdateInterval)
+            updateModelMaybe();
+        }
+
+        private void updateModelMaybe()
+        {
+            if (sinceLastUpdate >= ModelUpdateInterval)
             {
                 foreach (var dp in log.FlushCompleteEvents())
                 {
                     uint action = (uint)((int[])dp.InteractData.Value)[0];
-                    var label = new ContextualBanditLabel(action, dp.Reward, ((GenericTopSlotExplorerState)dp.InteractData.ExplorerState).Probabilities[action - 1]);
+                    var label = new ContextualBanditLabel(action, -dp.Reward, ((GenericTopSlotExplorerState)dp.InteractData.ExplorerState).Probabilities[action - 1]);
                     vw.Learn((TContext)dp.InteractData.Context, label, index: (int)label.Action - 1);
                 }
-                model = new MemoryStream();
-                vw.Native.SaveModel(model);
-                model.Position = 0;
-                this.UpdateModel(model);
+                MemoryStream currModel = new MemoryStream();
+                vw.Native.SaveModel(currModel);
+                currModel.Position = 0;
+                this.UpdateModel(currModel);
                 sinceLastUpdate = 0;
             }
         }
     }
-
-
 
     public class DecisionServiceLocal<TContext>
     {
